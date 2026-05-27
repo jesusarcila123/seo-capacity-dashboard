@@ -527,28 +527,30 @@ function parseCSV(text){
   return rows;
 }
 
-function fetchSheetCSV(sheetId,sheetName){
-  return new Promise((resolve,reject)=>{
-    const cb='_gs_'+Math.random().toString(36).slice(2,9);
-    const script=document.createElement('script');
-    const timer=setTimeout(()=>{cleanup();reject(new Error(`Timeout cargando "${sheetName}". ¿El Sheet es público?`));},12000);
-    function cleanup(){clearTimeout(timer);delete window[cb];if(script.parentNode)script.parentNode.removeChild(script);}
-    window[cb]=function(data){
-      cleanup();
-      try{
-        if(data.status==='error')throw new Error(data.errors?data.errors[0].message:`Error en hoja "${sheetName}"`);
-        const cols=data.table.cols.map(c=>c.label||c.id||'');
-        const rows=data.table.rows.map(r=>
-          (r.c||[]).map(cell=>cell&&cell.v!==null&&cell.v!==undefined?String(cell.v):'')
-        );
-        rows.forEach(r=>{while(r.length<cols.length)r.push('');});
-        resolve([cols,...rows]);
-      }catch(e){reject(new Error(`Parseando "${sheetName}": ${e.message}`));}
-    };
-    script.onerror=()=>{cleanup();reject(new Error(`No se pudo cargar "${sheetName}". Verifica que el Sheet esté compartido como público.`));};
-    script.src=`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&callback=${cb}&sheet=${encodeURIComponent(sheetName)}`;
-    document.head.appendChild(script);
-  });
+async function fetchSheetCSV(sheetId,sheetName){
+  // Method 1: fetch CSV export (no JSONP, no extension blocking)
+  const csvUrl=`https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),15000);
+  try{
+    const res=await fetch(csvUrl,{signal:controller.signal});
+    clearTimeout(timer);
+    if(!res.ok){
+      if(res.status===401||res.status===403)throw new Error(`Sin acceso a "${sheetName}". ¿El Sheet es público?`);
+      throw new Error(`HTTP ${res.status} cargando "${sheetName}"`);
+    }
+    const text=await res.text();
+    if(!text||text.trim()==='')throw new Error(`Hoja "${sheetName}" vacía o no encontrada`);
+    // Detect Google's HTML error page instead of CSV
+    if(text.trim().startsWith('<'))throw new Error(`"${sheetName}" devolvió HTML. ¿El Sheet es público y tiene esa pestaña?`);
+    const rows=parseCSV(text);
+    if(!rows.length)throw new Error(`No se encontraron datos en "${sheetName}"`);
+    return rows;
+  }catch(e){
+    clearTimeout(timer);
+    if(e.name==='AbortError')throw new Error(`Timeout cargando "${sheetName}". ¿El Sheet es público?`);
+    throw e;
+  }
 }
 
 let SYNC_INT=null;
